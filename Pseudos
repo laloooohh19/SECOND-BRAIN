@@ -1,0 +1,324 @@
+# Pseudocódigo: `shared` y transversales
+
+> Ruta en el repositorio: `docs/pseudocodigo/shared.md`
+> El pseudocódigo no depende del lenguaje: se implementa en Dart (`lib/shared/` y `lib/infrastructure/`).
+> Convenciones: `SI / SINO`, `PARA CADA`, `MIENTRAS`, `RETORNAR`, `FALLAR`. Fechas en formato `AAAA-MM-DD`.
+
+**Piezas de este archivo (11):** Resultado · pesosACentavos · centavosAPesos · formatearCOP · hoyEnZona · diaAnterior · inicioYFinDeMes · traducirErrorDeBase · registrarError · leerConfiguracion · crearClienteSupabase
+
+---
+
+## Decisiones previas
+
+1. **El reloj se inyecta.** Ninguna función de dominio lee la hora del sistema; recibe `ahora` como parámetro. Así las pruebas son deterministas.
+2. **El dominio no lanza errores hacia la interfaz.** Las entradas ya vienen validadas por la capa de aplicación; si llega una entrada imposible, es un error de programación (se lanza una excepción y se corrige el código).
+3. **Montos del MVP.** Para COP casi nunca se usan decimales. Recomendación: la interfaz acepta solo pesos enteros y la base sigue guardando **centavos** (ADR-002). Si más adelante se aceptan decimales, las funciones de abajo ya lo soportan.
+
+---
+
+## 1. Resultado
+
+```
+TIPO: Resultado<T>
+CAPA: transversal (shared)
+USADO POR: todos los casos de uso de la capa de aplicación
+
+VARIANTES:
+  Éxito(dato)
+  Fallo(mensaje)
+
+FUNCIÓN: ok(dato)
+  RETORNAR Éxito(dato)
+
+FUNCIÓN: fallar(mensaje)
+  1. SI mensaje está vacío
+       mensaje ← "Ocurrió un error"
+  2. RETORNAR Fallo(mensaje)
+
+REGLAS:
+  - los casos de uso devuelven Resultado en lugar de lanzar excepciones hacia la UI
+  - la UI decide qué mostrar según la variante
+
+CASOS DE PRUEBA:
+  - ok(5) → es Éxito y su dato es 5
+  - fallar("Datos inválidos") → es Fallo con ese mensaje
+  - fallar("") → es Fallo con "Ocurrió un error"
+```
+
+---
+
+## 2. Dinero
+
+### pesosACentavos
+
+```
+FUNCIÓN: pesosACentavos
+CAPA: dominio
+HISTORIA: HU-05
+ENTRADAS: pesos (número, con hasta 2 decimales)
+SALIDA: centavos (entero)
+PRECONDICIONES: pesos es finito (la aplicación ya validó que sea > 0)
+
+PASOS:
+  1. SI pesos no es un número finito → lanzar error de programación
+  2. centavos ← redondear al entero más cercano de (pesos × 100)
+  3. RETORNAR centavos
+
+CASOS DE PRUEBA:
+  - 15000 → 1500000
+  - 0.1 → 10
+  - 19.99 → 1999        (cuidado con el error de coma flotante: 19.99 × 100 no es exacto)
+  - 1 → 100
+  - 0 → 0
+  - infinito o no numérico → error de programación
+```
+
+### centavosAPesos
+
+```
+FUNCIÓN: centavosAPesos
+CAPA: dominio
+HISTORIA: HU-05, HU-06
+ENTRADAS: centavos (entero)
+SALIDA: pesos (número)
+
+PASOS:
+  1. RETORNAR centavos ÷ 100
+
+CASOS DE PRUEBA:
+  - 1500000 → 15000
+  - 1999 → 19.99
+  - 0 → 0
+```
+
+### formatearCOP
+
+```
+FUNCIÓN: formatearCOP
+CAPA: dominio (formato de presentación)
+HISTORIA: HU-05, HU-06
+ENTRADAS: centavos (entero)
+SALIDA: texto, por ejemplo "$15.000"
+
+REGLAS: formato de moneda de Colombia (es-CO): separador de miles ".",
+        sin decimales en el MVP.
+
+PASOS:
+  1. pesos ← centavosAPesos(centavos), redondeado al entero
+  2. RETORNAR pesos con el formato monetario de la configuración regional es-CO
+
+CASOS DE PRUEBA:
+  - 1500000 → "$15.000"
+  - 0 → "$0"
+  - 123456700 → "$1.234.567"
+
+NOTA: el espacio exacto entre el símbolo y el número depende de los datos
+      regionales de la librería de formato. En las pruebas, normaliza los
+      espacios antes de comparar y verifica la salida real una vez.
+```
+
+---
+
+## 3. Fechas
+
+### hoyEnZona
+
+```
+FUNCIÓN: hoyEnZona
+CAPA: dominio
+HISTORIA: HU-02, HU-03, HU-05 (fecha por defecto), HU-07
+ENTRADAS: zona (identificador IANA, ej. "America/Bogota"),
+          ahora (instante en UTC, inyectado)
+SALIDA: fecha local AAAA-MM-DD
+
+REGLAS: "hoy" siempre es el día del calendario en la zona del usuario,
+        no el día en UTC ni el del servidor.
+
+PASOS:
+  1. SI la zona no existe en la base de datos de zonas horarias
+       → lanzar error de programación (la zona se valida al guardar el perfil)
+  2. local ← convertir ahora a la hora local de esa zona
+  3. RETORNAR año, mes y día de local con ceros a la izquierda
+
+CASOS DE PRUEBA:
+  - ahora 2026-10-07 04:30 UTC, "America/Bogota"   → "2026-10-06"  (23:30 local, UTC-5)
+  - ahora 2026-10-07 05:00 UTC, "America/Bogota"   → "2026-10-07"  (00:00 local)
+  - ahora 2026-10-07 04:30 UTC, "Asia/Tokyo"       → "2026-10-07"  (13:30 local, UTC+9)
+  - ahora 2026-07-01 03:30 UTC, "America/New_York" → "2026-06-30"  (horario de verano, UTC-4)
+  - zona "Marte/Olympus" → error de programación
+```
+
+### diaAnterior
+
+```
+FUNCIÓN: diaAnterior
+CAPA: dominio
+HISTORIA: HU-08 (racha)
+ENTRADAS: fecha (AAAA-MM-DD)
+SALIDA: fecha del día anterior (AAAA-MM-DD)
+
+REGLAS: aritmética de calendario pura, sin zonas horarias;
+        respeta meses de distinta longitud y años bisiestos.
+
+PASOS:
+  1. SI fecha no es una fecha de calendario válida → lanzar error de programación
+  2. RETORNAR el día de calendario inmediatamente anterior
+
+CASOS DE PRUEBA:
+  - "2026-10-07" → "2026-10-06"
+  - "2026-10-01" → "2026-09-30"
+  - "2026-01-01" → "2025-12-31"
+  - "2024-03-01" → "2024-02-29"   (bisiesto)
+  - "2026-03-01" → "2026-02-28"
+  - "2026-13-01" → error de programación
+```
+
+### inicioYFinDeMes
+
+```
+FUNCIÓN: inicioYFinDeMes
+CAPA: dominio
+HISTORIA: HU-06 (resumen mensual)
+ENTRADAS: fecha (AAAA-MM-DD)
+SALIDA: par (desde, hasta), ambos inclusivos
+
+PASOS:
+  1. año, mes ← extraer de fecha
+  2. desde ← primer día de ese mes
+  3. primeroDelSiguiente ← primer día del mes siguiente
+       (SI mes = 12 → enero del año + 1)
+  4. hasta ← diaAnterior(primeroDelSiguiente)
+  5. RETORNAR (desde, hasta)
+
+CASOS DE PRUEBA:
+  - "2026-10-15" → ("2026-10-01", "2026-10-31")
+  - "2026-02-10" → ("2026-02-01", "2026-02-28")
+  - "2024-02-10" → ("2024-02-01", "2024-02-29")
+  - "2026-12-31" → ("2026-12-01", "2026-12-31")
+  - "2026-01-01" → ("2026-01-01", "2026-01-31")
+```
+
+---
+
+## 4. Transversales
+
+### traducirErrorDeBase
+
+```
+FUNCIÓN: traducirErrorDeBase
+CAPA: infraestructura (frontera con Supabase)
+ENTRADAS: error recibido de la base de datos o de la red
+SALIDA: ErrorDeApp con un tipo y un mensaje para el usuario
+
+PASOS:
+  1. SEGÚN el código de error:
+       "23505" (violación de único)     → tipo duplicado,      "Ya existe un registro igual"
+       "23503" (llave foránea)          → tipo referenciaInvalida, "El elemento relacionado no existe"
+       "23514" (violación de CHECK)     → tipo datosInvalidos, "Datos inválidos"
+       "42501" (RLS / sin permiso)      → tipo sinPermiso,     "No tienes permiso para esta acción"
+  2. SI el error es de red (sin conexión, tiempo agotado)
+       → tipo sinConexion, "Sin conexión. Intenta de nuevo"
+  3. EN CUALQUIER OTRO CASO
+       → tipo desconocido, "Ocurrió un error inesperado"
+       → LLAMAR registrarError(error)
+  4. RETORNAR el ErrorDeApp
+
+REGLAS:
+  - el mensaje nunca incluye detalles técnicos ni datos del usuario
+  - los casos de uso deciden si un tipo es éxito o fallo
+    (ej. "duplicado" al marcar un hábito el mismo día se trata como éxito)
+
+CASOS DE PRUEBA:
+  - código "23505" → duplicado
+  - código "23514" → datosInvalidos
+  - código "42501" → sinPermiso
+  - excepción de red → sinConexion
+  - código "99999" → desconocido y se registra el error
+
+PENDIENTE: confirmar los códigos que devuelve la librería de Supabase para
+           errores de autenticación (credenciales inválidas, sesión expirada)
+           y agregarlos aquí cuando se implemente HU-01.
+```
+
+### registrarError
+
+```
+FUNCIÓN: registrarError
+CAPA: infraestructura
+ENTRADAS: error, contexto (opcional, texto corto)
+SALIDA: nada
+
+PASOS (MVP):
+  1. imprimir el error y el contexto en la consola de depuración
+  2. NO enviar nada a servicios externos todavía
+
+REGLAS:
+  - nunca registrar contraseñas, tokens ni datos personales
+  - más adelante: reemplazar por un servicio de reporte de errores,
+    cambiando solo esta función
+```
+
+### leerConfiguracion
+
+```
+FUNCIÓN: leerConfiguracion
+CAPA: infraestructura
+SALIDA: configuración con urlSupabase y claveAnon
+
+PASOS:
+  1. leer urlSupabase y claveAnon de las variables de entorno
+     definidas al compilar (no de archivos dentro del repositorio)
+  2. SI falta alguna → FALLAR al arrancar con un mensaje claro
+     ("Falta configurar SUPABASE_URL" / "Falta configurar SUPABASE_ANON_KEY")
+  3. RETORNAR la configuración
+
+REGLAS:
+  - SOLO la clave "anon"; la clave "service_role" nunca va en la app
+  - los valores no se suben a Git (archivo de entorno en .gitignore)
+
+CASOS DE PRUEBA:
+  - ambas definidas → configuración válida
+  - falta la URL → falla al arrancar con mensaje claro
+```
+
+### crearClienteSupabase
+
+```
+FUNCIÓN: crearClienteSupabase
+CAPA: infraestructura
+SALIDA: cliente de Supabase listo para usar
+
+PASOS:
+  1. configuración ← leerConfiguracion()
+  2. inicializar el cliente UNA sola vez al arrancar la app,
+     antes de mostrar cualquier pantalla
+  3. activar la persistencia de sesión
+     (la sesión se conserva al cerrar y abrir la app: criterio de HU-01)
+  4. exponer el cliente a la capa de datos (repositorios)
+
+REGLAS:
+  - solo los repositorios usan el cliente; ni la UI ni el dominio lo importan
+
+CASOS DE PRUEBA:
+  - iniciar sesión, cerrar y reabrir la app → la sesión sigue activa
+  - sin configuración → la app no arranca y muestra el error de leerConfiguracion
+```
+
+---
+
+## Tabla de pruebas derivadas (qué escribir primero)
+
+| Función | N.º de pruebas |
+|---|---|
+| Resultado | 3 |
+| pesosACentavos | 6 |
+| centavosAPesos | 3 |
+| formatearCOP | 3 |
+| hoyEnZona | 5 |
+| diaAnterior | 6 |
+| inicioYFinDeMes | 5 |
+| traducirErrorDeBase | 5 |
+| leerConfiguracion | 2 |
+| **Total** | **38** |
+
+**Orden de implementación sugerido:** Resultado → dinero → diaAnterior → inicioYFinDeMes → hoyEnZona → traducirErrorDeBase → configuración y cliente. Escribe primero las pruebas de cada una, luego el código.
