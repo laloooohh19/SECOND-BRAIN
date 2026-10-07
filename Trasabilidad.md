@@ -1,9 +1,6 @@
 # Matriz de trazabilidad — v0.2
 
-> Base: 6 entrevistas de descubrimiento (la fila de Gabriela se descartó), inventario de funciones y pseudocódigo escrito hasta hoy.
-> Ruta sugerida en el repositorio: `docs/trazabilidad.md`
-> Las horas son estimaciones mías, no mediciones. Recalíbralas al terminar el primer módulo.
-
+> Base: 6 entrevistas de descubrimiento, inventario de funciones y pseudocódigo escrito hasta hoy.
 ---
 
 ## 0. Convenciones
